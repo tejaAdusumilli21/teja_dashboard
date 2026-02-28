@@ -4,7 +4,6 @@ import {
   getAuth,
   signInWithPopup,
   GoogleAuthProvider,
-  OAuthProvider,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   signOut,
@@ -42,9 +41,7 @@ export default function App() {
   // Signup state
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
-  const [contactMethod, setContactMethod] = useState("email");
   const [emailValue, setEmailValue] = useState("");
-  const [phoneValue, setPhoneValue] = useState("");
   const [signupPassword, setSignupPassword] = useState("");
 
   const clearError = () => setError("");
@@ -109,26 +106,6 @@ export default function App() {
     setLoading(false);
   };
 
-  const handleAppleLogin = async () => {
-    setLoading(true); clearError();
-    try {
-      const provider = new OAuthProvider("apple.com");
-      const result = await signInWithPopup(auth, provider);
-      const u = result.user;
-      const snap = await getDoc(doc(db, "users", u.uid));
-      if (!snap.exists()) {
-        const parts = (u.displayName || "Apple User").split(" ");
-        await setDoc(doc(db, "users", u.uid), {
-          firstName: parts[0], lastName: parts[1] || "",
-          email: u.email || "", contactMethod: "email", provider: "apple",
-          createdAt: new Date().toISOString(),
-        });
-      }
-    } catch (e) {
-      setError(e.message.includes("popup-closed") ? "Sign-in cancelled." : e.message);
-    }
-    setLoading(false);
-  };
 
   const handleEmailLogin = async () => {
     if (!loginEmail || !loginPassword) { setError("Please fill all fields"); return; }
@@ -143,19 +120,14 @@ export default function App() {
 
   const handleSignup = async () => {
     if (!firstName || !lastName || !signupPassword) { setError("Please fill all required fields."); return; }
-    if (contactMethod === "email" && !emailValue) { setError("Please enter your email."); return; }
-    if (contactMethod === "phone" && !phoneValue) { setError("Please enter your phone number."); return; }
+    if (!emailValue) { setError("Please enter your email."); return; }
     if (signupPassword.length < 6) { setError("Password must be at least 6 characters."); return; }
     setLoading(true); clearError();
     try {
-      const emailForAuth = contactMethod === "email"
-        ? emailValue
-        : `${phoneValue.replace(/\D/g, "")}@phone.teja.app`;
-      const result = await createUserWithEmailAndPassword(auth, emailForAuth, signupPassword);
+      const result = await createUserWithEmailAndPassword(auth, emailValue, signupPassword);
       await setDoc(doc(db, "users", result.user.uid), {
-        firstName, lastName, contactMethod,
-        email: contactMethod === "email" ? emailValue : null,
-        phone: contactMethod === "phone" ? phoneValue : null,
+        firstName, lastName, contactMethod: "email",
+        email: emailValue,
         provider: "email", createdAt: new Date().toISOString(),
       });
     } catch (e) {
@@ -512,7 +484,6 @@ export default function App() {
         {screen === "landing" && (
           <div className="card">
             <div className="logo">✦ teja</div>
-            <div className="subtitle">Your space. Your identity.</div>
             <h2>Welcome</h2>
             <p className="desc">Sign in or create a new account to continue.</p>
             <button className="btn-primary btn-login" onClick={() => { setScreen("login"); clearError(); }}>Log In</button>
@@ -537,12 +508,6 @@ export default function App() {
               Continue with Google
             </button>
 
-            <button className="social-btn" onClick={handleAppleLogin} disabled={loading}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="white">
-                <path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.7 9.05 7.4c1.33.07 2.24.74 3.02.78 1.16-.24 2.27-.93 3.51-.84 1.47.12 2.59.64 3.33 1.65-3.04 1.84-2.31 5.81.55 6.97-.65 1.67-1.52 3.32-2.41 4.32zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/>
-              </svg>
-              Continue with Apple
-            </button>
 
             {loginMethod !== "emailphone" && (
               <button className="social-btn" onClick={() => setLoginMethod("emailphone")}>
@@ -598,24 +563,9 @@ export default function App() {
               </div>
             </div>
 
-            <label className="label" style={{ marginBottom: 8 }}>Contact Method</label>
-            <div className="contact-toggle">
-              <button className={`toggle-opt ${contactMethod === "email" ? "active" : ""}`} onClick={() => setContactMethod("email")}>✉ Email</button>
-              <button className={`toggle-opt ${contactMethod === "phone" ? "active" : ""}`} onClick={() => setContactMethod("phone")}>📱 Phone</button>
-            </div>
-
             <div className="input-group">
-              {contactMethod === "email" ? (
-                <>
-                  <label className="label">Email Address</label>
-                  <input className="input" type="email" placeholder="you@example.com" value={emailValue} onChange={e => setEmailValue(e.target.value)} />
-                </>
-              ) : (
-                <>
-                  <label className="label">Phone Number</label>
-                  <input className="input" type="tel" placeholder="+91 98765 43210" value={phoneValue} onChange={e => setPhoneValue(e.target.value)} />
-                </>
-              )}
+              <label className="label">Email Address</label>
+              <input className="input" type="email" placeholder="you@example.com" value={emailValue} onChange={e => setEmailValue(e.target.value)} />
             </div>
 
             <div className="input-group">

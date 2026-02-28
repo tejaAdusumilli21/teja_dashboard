@@ -201,7 +201,7 @@ export default function App() {
       const emailForAuth =
         contactMethod === "email"
           ? emailValue
-          : `${phoneValue.replace(/\D/g, "")}@phone.lumina.app`;
+          : `${phoneValue.replace(/\D/g, "")}@phone.teja.app`;
 
       const result = await createUserWithEmailAndPassword(
         auth,

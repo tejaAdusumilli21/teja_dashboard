@@ -411,6 +411,9 @@ export default function App() {
 
   // ── RENDER ────────────────────────────────────────────────
 
+  const displayFirst = userData?.firstName || user?.displayName?.split(" ")[0] || user?.email?.split("@")[0] || "User";
+  const displayLast  = userData?.lastName  || user?.displayName?.split(" ").slice(1).join(" ") || "";
+
   if (!authChecked) {
     return (
       <>
@@ -570,13 +573,13 @@ export default function App() {
               <button className="logout-btn" onClick={handleLogout}>Sign Out</button>
             </div>
             <div className="avatar">
-              {userData?.firstName?.[0]?.toUpperCase() || "U"}
+              {displayFirst[0]?.toUpperCase() || "U"}
             </div>
             <div className="welcome-text">
-              Welcome,<br />{userData?.firstName || "User"}!
+              Welcome,<br />{displayFirst}!
             </div>
             <p className="home-sub">
-              {userData?.firstName} {userData?.lastName} · You're all set ✓
+              {displayFirst} {displayLast} · You're all set ✓
             </p>
             <div className="info-box">
               🔥 Firebase is active. Your profile is saved in Firestore at <code>users/{user?.uid?.slice(0, 8)}…</code>

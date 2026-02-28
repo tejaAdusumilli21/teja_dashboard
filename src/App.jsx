@@ -12,19 +12,6 @@ import {
 } from "firebase/auth";
 import { getFirestore, doc, setDoc, getDoc } from "firebase/firestore";
 
-// ============================================================
-// 🔥 STEP 1: Replace these values with your Firebase config
-// Go to: https://console.firebase.google.com
-// → Your Project → Project Settings → Your Apps → Web App
-// ============================================================
-// const firebaseConfig = {
-//   apiKey: "YOUR_API_KEY",
-//   authDomain: "YOUR_AUTH_DOMAIN",
-//   projectId: "YOUR_PROJECT_ID",
-//   storageBucket: "YOUR_STORAGE_BUCKET",
-//   messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
-//   appId: "YOUR_APP_ID",
-// };
 const firebaseConfig = {
   apiKey: "AIzaSyA7Uogd5ajbhSh3javgyQtg_dD369qSdDM",
   authDomain: "tejadashboard-afa75.firebaseapp.com",
@@ -39,12 +26,13 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 
 export default function App() {
-  const [screen, setScreen] = useState("landing"); // landing | login | signup | home
+  const [screen, setScreen] = useState("landing");
   const [user, setUser] = useState(null);
   const [userData, setUserData] = useState(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
 
   // Login state
   const [loginMethod, setLoginMethod] = useState("");
@@ -63,9 +51,7 @@ export default function App() {
 
   // ── Listen for auth state changes (auto-login on refresh) ──
   useEffect(() => {
-    // Safety net: if Firebase never responds, unblock UI after 5s
     const timeout = setTimeout(() => setAuthChecked(true), 5000);
-
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       clearTimeout(timeout);
       try {
@@ -74,7 +60,6 @@ export default function App() {
           if (snap.exists()) {
             setUserData(snap.data());
           } else {
-            // Social login user — use Firebase display name
             const parts = (firebaseUser.displayName || "User").split(" ");
             setUserData({ firstName: parts[0], lastName: parts[1] || "" });
           }
@@ -86,7 +71,6 @@ export default function App() {
           setScreen("landing");
         }
       } catch {
-        // Firestore failed — fall back to Firebase user info so we don't stay stuck
         if (firebaseUser) {
           const parts = (firebaseUser.displayName || "User").split(" ");
           setUserData({ firstName: parts[0], lastName: parts[1] || "" });
@@ -99,36 +83,26 @@ export default function App() {
         setAuthChecked(true);
       }
     });
-
-    return () => {
-      clearTimeout(timeout);
-      unsubscribe();
-    };
+    return () => { clearTimeout(timeout); unsubscribe(); };
   }, []);
 
   // ── HANDLERS ──────────────────────────────────────────────
 
   const handleGoogleLogin = async () => {
-    setLoading(true);
-    clearError();
+    setLoading(true); clearError();
     try {
       const provider = new GoogleAuthProvider();
       const result = await signInWithPopup(auth, provider);
       const u = result.user;
       const snap = await getDoc(doc(db, "users", u.uid));
       if (!snap.exists()) {
-        // First time Google login — save to Firestore
         const parts = (u.displayName || "User").split(" ");
         await setDoc(doc(db, "users", u.uid), {
-          firstName: parts[0],
-          lastName: parts[1] || "",
-          email: u.email,
-          contactMethod: "email",
-          provider: "google",
+          firstName: parts[0], lastName: parts[1] || "",
+          email: u.email, contactMethod: "email", provider: "google",
           createdAt: new Date().toISOString(),
         });
       }
-      // onAuthStateChanged will handle screen change
     } catch (e) {
       setError(e.message.includes("popup-closed") ? "Sign-in cancelled." : e.message);
     }
@@ -136,8 +110,7 @@ export default function App() {
   };
 
   const handleAppleLogin = async () => {
-    setLoading(true);
-    clearError();
+    setLoading(true); clearError();
     try {
       const provider = new OAuthProvider("apple.com");
       const result = await signInWithPopup(auth, provider);
@@ -146,11 +119,8 @@ export default function App() {
       if (!snap.exists()) {
         const parts = (u.displayName || "Apple User").split(" ");
         await setDoc(doc(db, "users", u.uid), {
-          firstName: parts[0],
-          lastName: parts[1] || "",
-          email: u.email || "",
-          contactMethod: "email",
-          provider: "apple",
+          firstName: parts[0], lastName: parts[1] || "",
+          email: u.email || "", contactMethod: "email", provider: "apple",
           createdAt: new Date().toISOString(),
         });
       }
@@ -161,15 +131,10 @@ export default function App() {
   };
 
   const handleEmailLogin = async () => {
-    if (!loginEmail || !loginPassword) {
-      setError("Please fill all fields");
-      return;
-    }
-    setLoading(true);
-    clearError();
+    if (!loginEmail || !loginPassword) { setError("Please fill all fields"); return; }
+    setLoading(true); clearError();
     try {
       await signInWithEmailAndPassword(auth, loginEmail, loginPassword);
-      // onAuthStateChanged handles the rest
     } catch (e) {
       setError("Invalid email or password.");
     }
@@ -177,72 +142,35 @@ export default function App() {
   };
 
   const handleSignup = async () => {
-    if (!firstName || !lastName || !signupPassword) {
-      setError("Please fill all required fields.");
-      return;
-    }
-    if (contactMethod === "email" && !emailValue) {
-      setError("Please enter your email.");
-      return;
-    }
-    if (contactMethod === "phone" && !phoneValue) {
-      setError("Please enter your phone number.");
-      return;
-    }
-    if (signupPassword.length < 6) {
-      setError("Password must be at least 6 characters.");
-      return;
-    }
-    setLoading(true);
-    clearError();
+    if (!firstName || !lastName || !signupPassword) { setError("Please fill all required fields."); return; }
+    if (contactMethod === "email" && !emailValue) { setError("Please enter your email."); return; }
+    if (contactMethod === "phone" && !phoneValue) { setError("Please enter your phone number."); return; }
+    if (signupPassword.length < 6) { setError("Password must be at least 6 characters."); return; }
+    setLoading(true); clearError();
     try {
-      // For phone: we use phone as username with placeholder domain
-      // For production phone auth, use Firebase Phone Auth with OTP
-      const emailForAuth =
-        contactMethod === "email"
-          ? emailValue
-          : `${phoneValue.replace(/\D/g, "")}@phone.teja.app`;
-
-      const result = await createUserWithEmailAndPassword(
-        auth,
-        emailForAuth,
-        signupPassword
-      );
-
-      // Save user profile to Firestore
+      const emailForAuth = contactMethod === "email"
+        ? emailValue
+        : `${phoneValue.replace(/\D/g, "")}@phone.teja.app`;
+      const result = await createUserWithEmailAndPassword(auth, emailForAuth, signupPassword);
       await setDoc(doc(db, "users", result.user.uid), {
-        firstName,
-        lastName,
-        contactMethod,
+        firstName, lastName, contactMethod,
         email: contactMethod === "email" ? emailValue : null,
         phone: contactMethod === "phone" ? phoneValue : null,
-        provider: "email",
-        createdAt: new Date().toISOString(),
+        provider: "email", createdAt: new Date().toISOString(),
       });
-
-      // onAuthStateChanged handles screen change
     } catch (e) {
-      if (e.code === "auth/email-already-in-use") {
-        setError("This email is already registered. Try logging in.");
-      } else if (e.code === "auth/invalid-email") {
-        setError("Please enter a valid email address.");
-      } else {
-        setError(e.message);
-      }
+      if (e.code === "auth/email-already-in-use") setError("This email is already registered. Try logging in.");
+      else if (e.code === "auth/invalid-email") setError("Please enter a valid email address.");
+      else setError(e.message);
     }
     setLoading(false);
   };
 
   const handleLogout = async () => {
     await signOut(auth);
-    setLoginMethod("");
-    setLoginEmail("");
-    setLoginPassword("");
-    setFirstName("");
-    setLastName("");
-    setEmailValue("");
-    setPhoneValue("");
-    setSignupPassword("");
+    setProfileOpen(false);
+    setLoginMethod(""); setLoginEmail(""); setLoginPassword("");
+    setFirstName(""); setLastName(""); setEmailValue(""); setPhoneValue(""); setSignupPassword("");
   };
 
   // ── CSS ───────────────────────────────────────────────────
@@ -253,11 +181,9 @@ export default function App() {
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: 'DM Sans', sans-serif; background: #0a0a0f; color: #e8e6ff; min-height: 100vh; }
 
+    /* ── AUTH SCREENS ── */
     .app {
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      min-height: 100vh; display: flex; align-items: center; justify-content: center;
       background:
         radial-gradient(ellipse at 20% 50%, #1a0533 0%, transparent 55%),
         radial-gradient(ellipse at 80% 20%, #001233 0%, transparent 50%),
@@ -265,58 +191,32 @@ export default function App() {
         #0a0a0f;
       padding: 20px;
     }
-
     .card {
-      background: rgba(255,255,255,0.04);
-      backdrop-filter: blur(20px);
-      border: 1px solid rgba(255,255,255,0.08);
-      border-radius: 24px;
-      padding: 48px 44px;
-      width: 100%;
-      max-width: 440px;
+      background: rgba(255,255,255,0.04); backdrop-filter: blur(20px);
+      border: 1px solid rgba(255,255,255,0.08); border-radius: 24px;
+      padding: 48px 44px; width: 100%; max-width: 440px;
       box-shadow: 0 32px 80px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.1);
       animation: slideUp 0.4s cubic-bezier(0.16,1,0.3,1);
     }
-
-    @keyframes slideUp {
-      from { opacity: 0; transform: translateY(24px); }
-      to   { opacity: 1; transform: translateY(0); }
-    }
+    @keyframes slideUp { from { opacity: 0; transform: translateY(24px); } to { opacity: 1; transform: translateY(0); } }
 
     .logo {
-      font-family: 'Syne', sans-serif;
-      font-weight: 800;
-      font-size: 28px;
-      letter-spacing: -1px;
+      font-family: 'Syne', sans-serif; font-weight: 800; font-size: 28px; letter-spacing: -1px;
       background: linear-gradient(135deg, #a78bfa, #60a5fa, #34d399);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
       margin-bottom: 8px;
     }
-
     .subtitle { font-size: 14px; color: rgba(255,255,255,0.35); margin-bottom: 40px; font-weight: 300; }
-
     h2 { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 22px; margin-bottom: 6px; color: #f0eeff; }
     .desc { font-size: 14px; color: rgba(255,255,255,0.4); margin-bottom: 32px; }
 
-    .btn-primary {
-      width: 100%; padding: 14px 20px; border-radius: 12px; border: none;
-      font-family: 'DM Sans', sans-serif; font-size: 15px; font-weight: 500;
-      cursor: pointer; transition: all 0.2s; margin-bottom: 12px; display: block;
-    }
+    .btn-primary { width: 100%; padding: 14px 20px; border-radius: 12px; border: none; font-family: 'DM Sans', sans-serif; font-size: 15px; font-weight: 500; cursor: pointer; transition: all 0.2s; margin-bottom: 12px; display: block; }
     .btn-login { background: linear-gradient(135deg, #7c3aed, #4f46e5); color: white; box-shadow: 0 8px 24px rgba(124,58,237,0.4); }
     .btn-login:hover { transform: translateY(-1px); box-shadow: 0 12px 32px rgba(124,58,237,0.55); }
     .btn-signup { background: transparent; color: #a78bfa; border: 1px solid rgba(167,139,250,0.3); }
     .btn-signup:hover { background: rgba(167,139,250,0.08); border-color: rgba(167,139,250,0.6); }
 
-    .social-btn {
-      width: 100%; padding: 13px 20px; border-radius: 12px;
-      border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05);
-      color: #e8e6ff; font-family: 'DM Sans', sans-serif; font-size: 14px;
-      cursor: pointer; display: flex; align-items: center; gap: 12px;
-      margin-bottom: 10px; transition: all 0.2s;
-    }
+    .social-btn { width: 100%; padding: 13px 20px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05); color: #e8e6ff; font-family: 'DM Sans', sans-serif; font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 12px; margin-bottom: 10px; transition: all 0.2s; }
     .social-btn:hover:not(:disabled) { background: rgba(255,255,255,0.09); border-color: rgba(255,255,255,0.2); transform: translateY(-1px); }
     .social-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
@@ -325,72 +225,136 @@ export default function App() {
 
     .input-group { margin-bottom: 14px; }
     .label { font-size: 11px; color: rgba(255,255,255,0.35); margin-bottom: 6px; font-weight: 500; letter-spacing: 0.8px; text-transform: uppercase; display: block; }
-    .input {
-      width: 100%; padding: 13px 16px; border-radius: 10px;
-      border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05);
-      color: #e8e6ff; font-family: 'DM Sans', sans-serif; font-size: 14px;
-      outline: none; transition: border-color 0.2s, background 0.2s;
-    }
+    .input { width: 100%; padding: 13px 16px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05); color: #e8e6ff; font-family: 'DM Sans', sans-serif; font-size: 14px; outline: none; transition: border-color 0.2s, background 0.2s; }
     .input:focus { border-color: rgba(167,139,250,0.5); background: rgba(255,255,255,0.07); }
     .input::placeholder { color: rgba(255,255,255,0.22); }
 
     .input-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
-    .input-row .input { margin-bottom: 0; }
-
     .contact-toggle { display: flex; border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; overflow: hidden; margin-bottom: 14px; }
     .toggle-opt { flex: 1; padding: 11px; text-align: center; font-size: 13px; cursor: pointer; transition: all 0.2s; color: rgba(255,255,255,0.35); border: none; background: transparent; font-family: 'DM Sans', sans-serif; }
     .toggle-opt.active { background: rgba(124,58,237,0.25); color: #a78bfa; font-weight: 500; }
 
-    .btn-submit {
-      width: 100%; padding: 14px 20px; border-radius: 12px; border: none;
-      background: linear-gradient(135deg, #7c3aed, #4f46e5); color: white;
-      font-family: 'DM Sans', sans-serif; font-size: 15px; font-weight: 500;
-      cursor: pointer; margin-top: 8px; transition: all 0.2s;
-      box-shadow: 0 8px 24px rgba(124,58,237,0.35); display: flex; align-items: center; justify-content: center; gap: 8px;
-    }
+    .btn-submit { width: 100%; padding: 14px 20px; border-radius: 12px; border: none; background: linear-gradient(135deg, #7c3aed, #4f46e5); color: white; font-family: 'DM Sans', sans-serif; font-size: 15px; font-weight: 500; cursor: pointer; margin-top: 8px; transition: all 0.2s; box-shadow: 0 8px 24px rgba(124,58,237,0.35); display: flex; align-items: center; justify-content: center; gap: 8px; }
     .btn-submit:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 12px 32px rgba(124,58,237,0.5); }
     .btn-submit:disabled { opacity: 0.5; cursor: not-allowed; }
 
-    .back-btn {
-      background: none; border: none; color: rgba(255,255,255,0.35); font-size: 13px;
-      cursor: pointer; display: flex; align-items: center; gap: 6px; margin-bottom: 28px;
-      padding: 0; transition: color 0.2s; font-family: 'DM Sans', sans-serif;
-    }
+    .back-btn { background: none; border: none; color: rgba(255,255,255,0.35); font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 6px; margin-bottom: 28px; padding: 0; transition: color 0.2s; font-family: 'DM Sans', sans-serif; }
     .back-btn:hover { color: rgba(255,255,255,0.7); }
-
     .error { color: #f87171; font-size: 13px; margin-top: 12px; text-align: center; padding: 10px; background: rgba(248,113,113,0.08); border-radius: 8px; }
-
     .spinner { width: 16px; height: 16px; border: 2px solid rgba(255,255,255,0.3); border-top-color: white; border-radius: 50%; animation: spin 0.6s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    /* Home */
-    .home-card { text-align: center; }
-    .home-header { display: flex; justify-content: flex-end; margin-bottom: 24px; }
-    .logout-btn {
-      padding: 9px 20px; border-radius: 10px; border: 1px solid rgba(248,113,113,0.3);
-      background: rgba(248,113,113,0.08); color: #f87171; font-family: 'DM Sans', sans-serif;
-      font-size: 13px; cursor: pointer; transition: all 0.2s;
-    }
-    .logout-btn:hover { background: rgba(248,113,113,0.15); border-color: rgba(248,113,113,0.5); }
+    /* ── SPLASH ── */
+    .splash { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: #0a0a0f; }
+    .splash-logo { font-family: 'Syne', sans-serif; font-weight: 800; font-size: 36px; background: linear-gradient(135deg, #a78bfa, #60a5fa, #34d399); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; animation: pulse 1.5s ease-in-out infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
 
-    .avatar {
-      width: 88px; height: 88px; border-radius: 50%;
-      background: linear-gradient(135deg, #7c3aed, #4f46e5, #2563eb);
-      display: flex; align-items: center; justify-content: center;
-      font-family: 'Syne', sans-serif; font-size: 34px; font-weight: 700; color: white;
-      margin: 0 auto 24px;
-      box-shadow: 0 16px 48px rgba(124,58,237,0.5);
+    /* ── DASHBOARD LAYOUT ── */
+    .dashboard {
+      min-height: 100vh;
+      background:
+        radial-gradient(ellipse at 20% 50%, #1a0533 0%, transparent 55%),
+        radial-gradient(ellipse at 80% 20%, #001233 0%, transparent 50%),
+        radial-gradient(ellipse at 60% 80%, #0d1f0a 0%, transparent 50%),
+        #0a0a0f;
     }
 
-    .welcome-text {
-      font-family: 'Syne', sans-serif; font-size: 34px; font-weight: 800;
+    /* Header */
+    .dash-header {
+      height: 60px; display: flex; align-items: center; justify-content: space-between;
+      padding: 0 24px; background: rgba(255,255,255,0.03); backdrop-filter: blur(16px);
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+    }
+    .dash-logo {
+      font-family: 'Syne', sans-serif; font-weight: 800; font-size: 22px; letter-spacing: -0.5px;
       background: linear-gradient(135deg, #a78bfa, #60a5fa, #34d399);
       -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
-      margin-bottom: 8px; line-height: 1.2;
     }
 
-    .home-sub { color: rgba(255,255,255,0.4); font-size: 14px; margin-bottom: 36px; }
+    /* Profile avatar + dropdown */
+    .profile-wrap { position: relative; }
+    .profile-btn {
+      width: 38px; height: 38px; border-radius: 50%;
+      background: linear-gradient(135deg, #7c3aed, #4f46e5, #2563eb);
+      display: flex; align-items: center; justify-content: center;
+      font-family: 'Syne', sans-serif; font-weight: 700; font-size: 15px; color: white;
+      cursor: pointer; border: 2px solid rgba(167,139,250,0.3); transition: all 0.2s; user-select: none;
+    }
+    .profile-btn:hover { border-color: rgba(167,139,250,0.75); box-shadow: 0 0 18px rgba(124,58,237,0.45); }
+    .profile-dropdown {
+      position: absolute; top: 50px; right: 0;
+      background: rgba(11,9,22,0.97); backdrop-filter: blur(20px);
+      border: 1px solid rgba(255,255,255,0.1); border-radius: 16px;
+      padding: 8px; min-width: 210px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.7);
+      animation: dropIn 0.15s cubic-bezier(0.16,1,0.3,1);
+      z-index: 200;
+    }
+    @keyframes dropIn { from { opacity: 0; transform: translateY(-6px) scale(0.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
+    .profile-info { padding: 12px 14px 14px; border-bottom: 1px solid rgba(255,255,255,0.07); margin-bottom: 6px; }
+    .profile-name { font-weight: 600; font-size: 14px; color: #f0eeff; }
+    .profile-email { font-size: 12px; color: rgba(255,255,255,0.35); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 182px; }
+    .dd-item {
+      display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+      border-radius: 10px; cursor: pointer; font-size: 14px; color: rgba(255,255,255,0.65);
+      transition: all 0.15s; border: none; background: none; width: 100%;
+      text-align: left; font-family: 'DM Sans', sans-serif;
+    }
+    .dd-item:hover { background: rgba(255,255,255,0.07); color: #f0eeff; }
+    .dd-item.danger { color: #f87171; }
+    .dd-item.danger:hover { background: rgba(248,113,113,0.1); color: #fca5a5; }
+    .dd-sep { height: 1px; background: rgba(255,255,255,0.07); margin: 6px 0; }
 
+    /* Sidebar */
+    .dash-body { display: flex; margin-top: 60px; min-height: calc(100vh - 60px); }
+    .sidebar {
+      width: 64px; background: rgba(255,255,255,0.02);
+      border-right: 1px solid rgba(255,255,255,0.05);
+      display: flex; flex-direction: column; align-items: center;
+      padding: 16px 0; gap: 6px;
+      position: fixed; left: 0; top: 60px; bottom: 0; z-index: 50;
+    }
+    .sb-icon {
+      width: 44px; height: 44px; border-radius: 12px;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; transition: all 0.2s; color: rgba(255,255,255,0.35);
+      border: none; background: none; position: relative;
+    }
+    .sb-icon:hover { background: rgba(124,58,237,0.15); color: rgba(167,139,250,0.8); }
+    .sb-icon.active { background: rgba(124,58,237,0.25); color: #a78bfa; }
+    .sb-icon .tip {
+      position: absolute; left: 54px;
+      background: rgba(11,9,22,0.97); border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 8px; padding: 5px 10px;
+      font-size: 12px; color: #e8e6ff; white-space: nowrap;
+      opacity: 0; pointer-events: none; transition: opacity 0.15s; z-index: 300;
+    }
+    .sb-icon:hover .tip { opacity: 1; }
+
+    /* Main content area */
+    .dash-main {
+      margin-left: 64px; flex: 1; padding: 48px 40px;
+      display: flex; align-items: center; justify-content: center;
+    }
+
+    /* Home content card */
+    .home-content { text-align: center; width: 100%; max-width: 440px; }
+    .big-avatar {
+      width: 96px; height: 96px; border-radius: 50%;
+      background: linear-gradient(135deg, #7c3aed, #4f46e5, #2563eb);
+      display: flex; align-items: center; justify-content: center;
+      font-family: 'Syne', sans-serif; font-size: 38px; font-weight: 700; color: white;
+      margin: 0 auto 28px;
+      box-shadow: 0 20px 56px rgba(124,58,237,0.5);
+    }
+    .welcome-text {
+      font-family: 'Syne', sans-serif; font-size: 36px; font-weight: 800;
+      background: linear-gradient(135deg, #a78bfa, #60a5fa, #34d399);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+      margin-bottom: 10px; line-height: 1.2;
+    }
+    .home-sub { color: rgba(255,255,255,0.4); font-size: 14px; margin-bottom: 36px; }
     .info-box {
       padding: 18px 20px; background: rgba(255,255,255,0.03);
       border-radius: 14px; border: 1px solid rgba(255,255,255,0.07);
@@ -398,13 +362,8 @@ export default function App() {
     }
     .info-box code { color: #a78bfa; font-size: 12px; }
 
-    /* Splash loader */
-    .splash { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: #0a0a0f; }
-    .splash-logo { font-family: 'Syne', sans-serif; font-weight: 800; font-size: 36px; background: linear-gradient(135deg, #a78bfa, #60a5fa, #34d399); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; animation: pulse 1.5s ease-in-out infinite; }
-    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
-
-    @media (max-width: 480px) {
-      .card { padding: 36px 24px; }
+    @media (max-width: 640px) {
+      .dash-main { padding: 24px 16px; }
       .welcome-text { font-size: 28px; }
     }
   `;
@@ -423,33 +382,148 @@ export default function App() {
     );
   }
 
+  // ── DASHBOARD (home screen) ──
+  if (screen === "home") {
+    return (
+      <>
+        <style>{styles}</style>
+        <div className="dashboard">
+
+          {/* ── HEADER ── */}
+          <header className="dash-header">
+            <div className="dash-logo">✦ teja</div>
+
+            {/* Profile avatar + hover dropdown */}
+            <div
+              className="profile-wrap"
+              onMouseEnter={() => setProfileOpen(true)}
+              onMouseLeave={() => setProfileOpen(false)}
+            >
+              <div className="profile-btn">
+                {displayFirst[0]?.toUpperCase() || "U"}
+              </div>
+
+              {profileOpen && (
+                <div className="profile-dropdown">
+                  <div className="profile-info">
+                    <div className="profile-name">{displayFirst} {displayLast}</div>
+                    <div className="profile-email">{user?.email || "Signed in"}</div>
+                  </div>
+
+                  {/* Profile */}
+                  <button className="dd-item">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
+                    </svg>
+                    Profile
+                  </button>
+
+                  {/* Settings */}
+                  <button className="dd-item">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="12" cy="12" r="3"/>
+                      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                    </svg>
+                    Settings
+                  </button>
+
+                  <div className="dd-sep" />
+
+                  {/* Sign Out */}
+                  <button className="dd-item danger" onClick={handleLogout}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                      <polyline points="16 17 21 12 16 7"/>
+                      <line x1="21" y1="12" x2="9" y2="12"/>
+                    </svg>
+                    Sign Out
+                  </button>
+                </div>
+              )}
+            </div>
+          </header>
+
+          {/* ── BODY ── */}
+          <div className="dash-body">
+
+            {/* Left Sidebar */}
+            <nav className="sidebar">
+              {/* Home */}
+              <button className="sb-icon active">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                  <polyline points="9 22 9 12 15 12 15 22"/>
+                </svg>
+                <span className="tip">Home</span>
+              </button>
+
+              {/* Analytics placeholder */}
+              <button className="sb-icon">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="20" x2="18" y2="10"/>
+                  <line x1="12" y1="20" x2="12" y2="4"/>
+                  <line x1="6"  y1="20" x2="6"  y2="14"/>
+                </svg>
+                <span className="tip">Analytics</span>
+              </button>
+
+              {/* Settings placeholder */}
+              <button className="sb-icon">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="3"/>
+                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                </svg>
+                <span className="tip">Settings</span>
+              </button>
+            </nav>
+
+            {/* Main content */}
+            <main className="dash-main">
+              <div className="home-content">
+                <div className="big-avatar">
+                  {displayFirst[0]?.toUpperCase() || "U"}
+                </div>
+                <div className="welcome-text">
+                  Welcome,<br />{displayFirst}!
+                </div>
+                <p className="home-sub">
+                  {displayFirst} {displayLast} · You're all set ✓
+                </p>
+                <div className="info-box">
+                  🔥 Firebase is active. Your profile is saved in Firestore at <code>users/{user?.uid?.slice(0, 8)}…</code>
+                  <br />Refresh the page — you'll stay logged in automatically.
+                </div>
+              </div>
+            </main>
+
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  // ── AUTH SCREENS ──
   return (
     <>
       <style>{styles}</style>
       <div className="app">
 
-        {/* ── LANDING ── */}
+        {/* LANDING */}
         {screen === "landing" && (
           <div className="card">
             <div className="logo">✦ teja</div>
             <div className="subtitle">Your space. Your identity.</div>
             <h2>Welcome</h2>
             <p className="desc">Sign in or create a new account to continue.</p>
-            <button className="btn-primary btn-login" onClick={() => { setScreen("login"); clearError(); }}>
-              Log In
-            </button>
-            <button className="btn-primary btn-signup" onClick={() => { setScreen("signup"); clearError(); }}>
-              Create Account
-            </button>
+            <button className="btn-primary btn-login" onClick={() => { setScreen("login"); clearError(); }}>Log In</button>
+            <button className="btn-primary btn-signup" onClick={() => { setScreen("signup"); clearError(); }}>Create Account</button>
           </div>
         )}
 
-        {/* ── LOGIN ── */}
+        {/* LOGIN */}
         {screen === "login" && (
           <div className="card">
-            <button className="back-btn" onClick={() => { setScreen("landing"); setLoginMethod(""); clearError(); }}>
-              ← Back
-            </button>
+            <button className="back-btn" onClick={() => { setScreen("landing"); setLoginMethod(""); clearError(); }}>← Back</button>
             <h2>Sign In</h2>
             <p className="desc">Choose how you'd like to continue</p>
 
@@ -492,8 +566,7 @@ export default function App() {
                   <input className="input" type="password" placeholder="Your password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} onKeyDown={e => e.key === "Enter" && handleEmailLogin()} />
                 </div>
                 <button className="btn-submit" onClick={handleEmailLogin} disabled={loading}>
-                  {loading && <span className="spinner" />}
-                  Sign In
+                  {loading && <span className="spinner" />} Sign In
                 </button>
               </div>
             )}
@@ -503,17 +576,14 @@ export default function App() {
                 <span className="spinner" /> Signing in...
               </p>
             )}
-
             {error && <div className="error">{error}</div>}
           </div>
         )}
 
-        {/* ── SIGNUP ── */}
+        {/* SIGNUP */}
         {screen === "signup" && (
           <div className="card">
-            <button className="back-btn" onClick={() => { setScreen("landing"); clearError(); }}>
-              ← Back
-            </button>
+            <button className="back-btn" onClick={() => { setScreen("landing"); clearError(); }}>← Back</button>
             <h2>Create Account</h2>
             <p className="desc">Fill in your details to get started</p>
 
@@ -530,12 +600,8 @@ export default function App() {
 
             <label className="label" style={{ marginBottom: 8 }}>Contact Method</label>
             <div className="contact-toggle">
-              <button className={`toggle-opt ${contactMethod === "email" ? "active" : ""}`} onClick={() => setContactMethod("email")}>
-                ✉ Email
-              </button>
-              <button className={`toggle-opt ${contactMethod === "phone" ? "active" : ""}`} onClick={() => setContactMethod("phone")}>
-                📱 Phone
-              </button>
+              <button className={`toggle-opt ${contactMethod === "email" ? "active" : ""}`} onClick={() => setContactMethod("email")}>✉ Email</button>
+              <button className={`toggle-opt ${contactMethod === "phone" ? "active" : ""}`} onClick={() => setContactMethod("phone")}>📱 Phone</button>
             </div>
 
             <div className="input-group">
@@ -558,33 +624,9 @@ export default function App() {
             </div>
 
             <button className="btn-submit" onClick={handleSignup} disabled={loading}>
-              {loading && <span className="spinner" />}
-              Create Account
+              {loading && <span className="spinner" />} Create Account
             </button>
-
             {error && <div className="error">{error}</div>}
-          </div>
-        )}
-
-        {/* ── HOME ── */}
-        {screen === "home" && (
-          <div className="card home-card">
-            <div className="home-header">
-              <button className="logout-btn" onClick={handleLogout}>Sign Out</button>
-            </div>
-            <div className="avatar">
-              {displayFirst[0]?.toUpperCase() || "U"}
-            </div>
-            <div className="welcome-text">
-              Welcome,<br />{displayFirst}!
-            </div>
-            <p className="home-sub">
-              {displayFirst} {displayLast} · You're all set ✓
-            </p>
-            <div className="info-box">
-              🔥 Firebase is active. Your profile is saved in Firestore at <code>users/{user?.uid?.slice(0, 8)}…</code>
-              <br />Refresh the page — you'll stay logged in automatically.
-            </div>
           </div>
         )}
 

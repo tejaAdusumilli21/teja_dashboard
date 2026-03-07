@@ -763,7 +763,7 @@ export default function App() {
     .btn-signup { background: transparent; color: #a78bfa; border: 1px solid rgba(167,139,250,0.3); }
     .btn-signup:hover { background: rgba(167,139,250,0.08); border-color: rgba(167,139,250,0.6); }
 
-    .social-btn { width: 100%; padding: 13px 20px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05); color: #e8e6ff; font-family: 'DM Sans', sans-serif; font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 12px; margin-bottom: 10px; transition: all 0.2s; }
+    .social-btn { width: 100%; padding: 13px 20px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.25); background: rgba(255,255,255,0.1); color: #ffffff; font-family: 'DM Sans', sans-serif; font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 12px; margin-bottom: 10px; transition: all 0.2s; }
     .social-btn:hover:not(:disabled) { background: rgba(255,255,255,0.09); border-color: rgba(255,255,255,0.2); transform: translateY(-1px); }
     .social-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
@@ -771,10 +771,10 @@ export default function App() {
     .divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: rgba(255,255,255,0.1); }
 
     .input-group { margin-bottom: 14px; }
-    .label { font-size: 11px; color: rgba(255,255,255,0.35); margin-bottom: 6px; font-weight: 500; letter-spacing: 0.8px; text-transform: uppercase; display: block; }
+    .label { font-size: 11px; color: rgba(255,255,255,0.6); margin-bottom: 6px; font-weight: 500; letter-spacing: 0.8px; text-transform: uppercase; display: block; }
     .input { width: 100%; padding: 13px 16px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05); color: #e8e6ff; font-family: 'DM Sans', sans-serif; font-size: 14px; outline: none; transition: border-color 0.2s, background 0.2s; }
-    .input:focus { border-color: rgba(167,139,250,0.5); background: rgba(255,255,255,0.07); }
-    .input::placeholder { color: rgba(255,255,255,0.22); }
+    .input:focus { border-color: rgba(167,139,250,0.7); background: rgba(255,255,255,0.14); }
+    .input::placeholder { color: rgba(255,255,255,0.4); }
 
     .input-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
     .contact-toggle { display: flex; border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; overflow: hidden; margin-bottom: 14px; }

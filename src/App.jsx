@@ -1,4 +1,11 @@
 import { useState, useEffect, useRef } from "react";
+import plioLogo from "./assets/plio-logo.svg";
+import { useEditor, EditorContent } from "@tiptap/react";
+import StarterKit from "@tiptap/starter-kit";
+import Underline from "@tiptap/extension-underline";
+import Placeholder from "@tiptap/extension-placeholder";
+import TaskList from "@tiptap/extension-task-list";
+import TaskItem from "@tiptap/extension-task-item";
 import { initializeApp } from "firebase/app";
 import {
   getAuth,
@@ -8,6 +15,8 @@ import {
   createUserWithEmailAndPassword,
   signOut,
   onAuthStateChanged,
+  updateProfile,
+  sendEmailVerification,
 } from "firebase/auth";
 import {
   getFirestore, doc, setDoc, getDoc,
@@ -59,6 +68,14 @@ export default function App() {
   const [shareError, setShareError]         = useState("");
   const [shareMembers, setShareMembers]     = useState([]);
   const [uidCopied, setUidCopied]           = useState(false);
+  const [verifSent, setVerifSent]           = useState(false);
+  const [verifError, setVerifError]         = useState("");
+  const [editingProfile, setEditingProfile] = useState(false);
+  const [editFirstName, setEditFirstName]   = useState("");
+  const [editLastName, setEditLastName]     = useState("");
+  const [editAvatarColor, setEditAvatarColor] = useState(0);
+  const [profileSaving, setProfileSaving]   = useState(false);
+  const [profileEditError, setProfileEditError] = useState("");
   const [dragTaskId, setDragTaskId]         = useState(null);
   const [dragOverCol, setDragOverCol]       = useState(null);
   const [kanbanLoading, setKanbanLoading]   = useState(false);
@@ -83,8 +100,28 @@ export default function App() {
   const [noteSaving, setNoteSaving]     = useState(false);
   const [noteEditorOpen, setNoteEditorOpen] = useState(false);
   const [noteError, setNoteError]       = useState("");
+  const [showNoteShare, setShowNoteShare]   = useState(false);
+  const [noteShareInput, setNoteShareInput] = useState("");
+  const [noteShareError, setNoteShareError] = useState("");
+  const [noteShareSaving, setNoteShareSaving] = useState(false);
   const activeNoteRef  = useRef(null);
   const isSavingRef    = useRef(false);
+
+  // ── TipTap rich-text editor ──
+  const editor = useEditor({
+    extensions: [
+      StarterKit,
+      Underline,
+      Placeholder.configure({ placeholder: "Start writing…" }),
+      TaskList,
+      TaskItem.configure({ nested: true }),
+    ],
+    content: "",
+    onUpdate: ({ editor }) => {
+      setNoteError("");
+      setNoteContent(editor.getHTML());
+    },
+  });
 
   // ── Theme / Settings state ──
   const [theme, setTheme]           = useState(() => localStorage.getItem("app_theme") || "dark");
@@ -219,10 +256,13 @@ export default function App() {
 
   // Returns error string or "" if valid
   const validateTaskDates = (start, end) => {
+    // Use local date constructor to avoid UTC timezone shift issues
     const isReal = (str) => {
       if (!str) return true;
-      const d = new Date(str + "T00:00:00");
-      return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === str;
+      const [y, m, d] = str.split("-").map(Number);
+      if (!y || !m || !d) return false;
+      const dt = new Date(y, m - 1, d);
+      return dt.getFullYear() === y && dt.getMonth() === m - 1 && dt.getDate() === d;
     };
     if (!isReal(start)) return "Invalid start date (e.g. Feb 31 doesn't exist).";
     if (!isReal(end))   return "Invalid end date (e.g. Feb 31 doesn't exist).";
@@ -236,6 +276,10 @@ export default function App() {
     if (dateErr) { setAddTaskError(dateErr); return; }
     setAddTaskError("");
     setKanbanLoading(true);
+    const creatorName = userData?.firstName
+      ? `${userData.firstName}${userData.lastName ? " " + userData.lastName : ""}`
+      : user?.email || "Unknown";
+    const todayStr = new Date().toISOString().split("T")[0];
     try {
       const ref = await addDoc(collection(db, "boards", kanbanBoard.id, "tasks"), {
         title: newTaskTitle.trim(),
@@ -245,6 +289,8 @@ export default function App() {
         endDate: newTaskEndDate,
         createdBy: user.email,
         createdAt: serverTimestamp(),
+        lastModifiedBy: creatorName,
+        lastModifiedAt: todayStr,
       });
       setTasks(prev => [...prev, {
         id: ref.id,
@@ -254,6 +300,8 @@ export default function App() {
         startDate: newTaskStartDate,
         endDate: newTaskEndDate,
         createdBy: user.email,
+        lastModifiedBy: creatorName,
+        lastModifiedAt: todayStr,
       }]);
       setNewTaskTitle(""); setNewTaskDesc(""); setNewTaskStartDate(""); setNewTaskEndDate(""); setNewTaskStatus("todo"); setShowAddTask(false);
     } catch (e) {
@@ -303,12 +351,18 @@ export default function App() {
     if (dateErr) { setEditTaskError(dateErr); return; }
     setEditTaskError("");
     setKanbanLoading(true);
+    const now = new Date().toISOString().split("T")[0];
+    const modifiedBy = userData?.firstName
+      ? `${userData.firstName}${userData.lastName ? " " + userData.lastName : ""}`
+      : user?.email || "Unknown";
     const updated = {
       title: editTaskTitle.trim(),
       description: editTaskDesc.trim(),
       status: editTaskStatus,
       startDate: editTaskStart,
       endDate: editTaskEnd,
+      lastModifiedBy: modifiedBy,
+      lastModifiedAt: now,
     };
     try {
       await updateDoc(doc(db, "boards", kanbanBoard.id, "tasks", selectedTask.id), updated);
@@ -332,13 +386,32 @@ export default function App() {
     if (!user) return;
     setNoteError("");
     try {
-      let snap;
+      // Own notes
+      let ownSnap;
       try {
-        snap = await getDocs(query(collection(db, "notes"), where("uid", "==", user.uid), orderBy("updatedAt", "desc")));
+        ownSnap = await getDocs(query(collection(db, "notes"), where("uid", "==", user.uid), orderBy("updatedAt", "desc")));
       } catch {
-        snap = await getDocs(query(collection(db, "notes"), where("uid", "==", user.uid)));
+        ownSnap = await getDocs(query(collection(db, "notes"), where("uid", "==", user.uid)));
       }
-      setNotes(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      // Notes shared with me
+      let sharedSnap;
+      try {
+        sharedSnap = await getDocs(query(collection(db, "notes"), where("sharedWith", "array-contains", user.uid)));
+      } catch {
+        sharedSnap = { docs: [] };
+      }
+      const seen = new Set();
+      const all = [];
+      [...ownSnap.docs, ...sharedSnap.docs].forEach(d => {
+        if (!seen.has(d.id)) { seen.add(d.id); all.push({ id: d.id, ...d.data() }); }
+      });
+      // Sort by updatedAt desc
+      all.sort((a, b) => {
+        const ta = a.updatedAt?.toMillis?.() || 0;
+        const tb = b.updatedAt?.toMillis?.() || 0;
+        return tb - ta;
+      });
+      setNotes(all);
     } catch (e) {
       setNoteError(noteErrMsg(e));
     } finally {
@@ -353,17 +426,19 @@ export default function App() {
     setNoteError("");
     try {
       const now = serverTimestamp();
+      const modName = [userData?.firstName, userData?.lastName].filter(Boolean).join(" ") || user.email || "Unknown";
+      const modDate = new Date().toISOString().split("T")[0];
       if (id) {
-        await updateDoc(doc(db, "notes", id), { title: title || "Untitled", content, updatedAt: now });
-        const saved = { ...activeNoteRef.current, title: title || "Untitled", content };
+        await updateDoc(doc(db, "notes", id), { title: title || "Untitled", content, updatedAt: now, lastModifiedBy: modName, lastModifiedAt: modDate });
+        const saved = { ...activeNoteRef.current, title: title || "Untitled", content, lastModifiedBy: modName, lastModifiedAt: modDate };
         setActiveNote(saved);
         activeNoteRef.current = saved;
-        setNotes(prev => prev.map(n => n.id === id ? { ...n, title: title || "Untitled", content } : n));
+        setNotes(prev => prev.map(n => n.id === id ? { ...n, title: title || "Untitled", content, lastModifiedBy: modName, lastModifiedAt: modDate } : n));
       } else {
         const ref = await addDoc(collection(db, "notes"), {
-          uid: user.uid, title: title || "Untitled", content, createdAt: now, updatedAt: now,
+          uid: user.uid, title: title || "Untitled", content, createdAt: now, updatedAt: now, lastModifiedBy: modName, lastModifiedAt: modDate,
         });
-        const newNote = { id: ref.id, uid: user.uid, title: title || "Untitled", content };
+        const newNote = { id: ref.id, uid: user.uid, title: title || "Untitled", content, lastModifiedBy: modName, lastModifiedAt: modDate };
         setNotes(prev => [newNote, ...prev]);
         setActiveNote(newNote);
         activeNoteRef.current = newNote;
@@ -374,6 +449,46 @@ export default function App() {
       setNoteSaving(false);
       isSavingRef.current = false;
     }
+  };
+
+  const AVATAR_COLORS = [
+    "linear-gradient(135deg,#7c3aed,#2563eb)",
+    "linear-gradient(135deg,#ec4899,#8b5cf6)",
+    "linear-gradient(135deg,#06b6d4,#3b82f6)",
+    "linear-gradient(135deg,#10b981,#059669)",
+    "linear-gradient(135deg,#f97316,#ef4444)",
+    "linear-gradient(135deg,#f43f5e,#ec4899)",
+    "linear-gradient(135deg,#6366f1,#8b5cf6)",
+    "linear-gradient(135deg,#14b8a6,#06b6d4)",
+  ];
+
+  const openEditProfile = () => {
+    const today = new Date().toISOString().split("T")[0];
+    if (userData?.lastProfileEdit === today) {
+      setProfileEditError("You can only edit your profile once per day.");
+      return;
+    }
+    setEditFirstName(userData?.firstName || "");
+    setEditLastName(userData?.lastName || "");
+    setEditAvatarColor(userData?.avatarColor ?? 0);
+    setProfileEditError("");
+    setEditingProfile(true);
+  };
+
+  const saveProfile = async () => {
+    if (!editFirstName.trim()) { setProfileEditError("First name is required."); return; }
+    setProfileSaving(true); setProfileEditError("");
+    try {
+      const today = new Date().toISOString().split("T")[0];
+      const updates = { firstName: editFirstName.trim(), lastName: editLastName.trim(), avatarColor: editAvatarColor, lastProfileEdit: today };
+      await updateDoc(doc(db, "users", user.uid), updates);
+      await updateProfile(user, { displayName: `${editFirstName.trim()} ${editLastName.trim()}`.trim() });
+      setUserData(prev => ({ ...prev, ...updates }));
+      setEditingProfile(false);
+    } catch (e) {
+      setProfileEditError(e.message || "Failed to save. Try again.");
+    }
+    setProfileSaving(false);
   };
 
   const deleteNote = async (noteId) => {
@@ -387,12 +502,55 @@ export default function App() {
     } catch (e) { setNoteError(noteErrMsg(e)); }
   };
 
+  const shareNote = async (input) => {
+    if (!input.trim() || !activeNote?.id) return;
+    setNoteShareSaving(true);
+    setNoteShareError("");
+    const trimmed = input.trim();
+    try {
+      let memberId = null;
+      let memberEmail = null;
+      if (trimmed.includes("@")) {
+        const snap = await getDocs(query(collection(db, "users"), where("email", "==", trimmed)));
+        if (snap.empty) { setNoteShareError("No user found with that email."); setNoteShareSaving(false); return; }
+        memberId = snap.docs[0].id;
+        memberEmail = trimmed;
+      } else {
+        const uSnap = await getDoc(doc(db, "users", trimmed));
+        if (!uSnap.exists()) { setNoteShareError("No user found with that User ID."); setNoteShareSaving(false); return; }
+        memberId = trimmed;
+        memberEmail = uSnap.data().email || trimmed;
+      }
+      if (memberId === user.uid) { setNoteShareError("You can't share with yourself."); setNoteShareSaving(false); return; }
+      const sharedWith = [...(activeNote.sharedWith || [])];
+      if (sharedWith.includes(memberId)) { setNoteShareError("Already shared with this user."); setNoteShareSaving(false); return; }
+      sharedWith.push(memberId);
+      const sharedEmails = [...(activeNote.sharedEmails || []), memberEmail];
+      await updateDoc(doc(db, "notes", activeNote.id), { sharedWith, sharedEmails });
+      const updatedNote = { ...activeNote, sharedWith, sharedEmails };
+      activeNoteRef.current = updatedNote;
+      setActiveNote(updatedNote);
+      setNotes(prev => prev.map(n => n.id === activeNote.id ? updatedNote : n));
+      setNoteShareInput("");
+    } catch (e) {
+      setNoteShareError("Failed to share: " + e.message);
+    }
+    setNoteShareSaving(false);
+  };
+
   const openNote = (note) => {
     activeNoteRef.current = note;
     setActiveNote(note);
     setNoteTitle(note.title || "");
     setNoteContent(note.content || "");
     setNoteEditorOpen(true);
+    // Load existing content into TipTap (setTimeout ensures editor is ready)
+    setTimeout(() => {
+      if (editor) {
+        editor.commands.setContent(note.content || "", false);
+        editor.commands.focus("end");
+      }
+    }, 0);
   };
 
   const startNewNote = () => {
@@ -401,6 +559,12 @@ export default function App() {
     setNoteTitle("");
     setNoteContent("");
     setNoteEditorOpen(true);
+    setTimeout(() => {
+      if (editor) {
+        editor.commands.setContent("", false);
+        editor.commands.focus();
+      }
+    }, 0);
   };
 
   // ── Close profile dropdown on outside click ──
@@ -535,11 +699,10 @@ export default function App() {
     setLoading(true); clearError();
     try {
       const result = await createUserWithEmailAndPassword(auth, emailValue, signupPassword);
-      await setDoc(doc(db, "users", result.user.uid), {
-        firstName, lastName, contactMethod: "email",
-        email: emailValue,
-        provider: "email", createdAt: new Date().toISOString(),
-      });
+      await updateProfile(result.user, { displayName: `${firstName} ${lastName}`.trim() });
+      const newData = { firstName, lastName, contactMethod: "email", email: emailValue, provider: "email", createdAt: new Date().toISOString() };
+      await setDoc(doc(db, "users", result.user.uid), newData);
+      setUserData(newData);
     } catch (e) {
       if (e.code === "auth/email-already-in-use") setError("This email is already registered. Try logging in.");
       else if (e.code === "auth/invalid-email") setError("Please enter a valid email address.");
@@ -589,12 +752,7 @@ export default function App() {
     }
     @keyframes slideUp { from { opacity: 0; transform: translateY(24px); } to { opacity: 1; transform: translateY(0); } }
 
-    .logo {
-      font-family: 'Syne', sans-serif; font-weight: 800; font-size: 28px; letter-spacing: -1px;
-      background: linear-gradient(135deg, #a78bfa, #60a5fa, #34d399);
-      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
-      margin-bottom: 8px;
-    }
+    .logo { height: 32px; width: auto; margin-bottom: 8px; }
     .subtitle { font-size: 14px; color: rgba(255,255,255,0.35); margin-bottom: 40px; font-weight: 300; }
     h2 { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 22px; margin-bottom: 6px; color: #f0eeff; }
     .desc { font-size: 14px; color: rgba(255,255,255,0.4); margin-bottom: 32px; }
@@ -635,7 +793,7 @@ export default function App() {
 
     /* ── SPLASH ── */
     .splash { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: #0a0a0f; }
-    .splash-logo { font-family: 'Syne', sans-serif; font-weight: 800; font-size: 36px; background: linear-gradient(135deg, #a78bfa, #60a5fa, #34d399); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; animation: pulse 1.5s ease-in-out infinite; }
+    .splash-logo { width: 120px; height: auto; animation: pulse 1.5s ease-in-out infinite; }
     @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
 
     /* ── DASHBOARD LAYOUT ── */
@@ -655,11 +813,7 @@ export default function App() {
       border-bottom: 1px solid rgba(255,255,255,0.06);
       position: fixed; top: 0; left: 0; right: 0; z-index: 100;
     }
-    .dash-logo {
-      font-family: 'Syne', sans-serif; font-weight: 800; font-size: 22px; letter-spacing: -0.5px;
-      background: linear-gradient(135deg, #a78bfa, #60a5fa, #34d399);
-      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
-    }
+    .dash-logo { height: 28px; width: auto; display: block; }
 
     /* Bell / notification */
     .notif-wrap { position: relative; }
@@ -684,7 +838,8 @@ export default function App() {
       z-index: 200; box-shadow: 0 8px 32px rgba(0,0,0,0.5);
     }
     .notif-header { padding: 13px 16px; font-size: 13px; font-weight: 600; color: #f0eeff; border-bottom: 1px solid rgba(255,255,255,0.07); }
-    .notif-item { padding: 11px 16px; border-bottom: 1px solid rgba(255,255,255,0.05); cursor: default; }
+    .notif-item { padding: 11px 16px; border-bottom: 1px solid rgba(255,255,255,0.05); cursor: pointer; transition: background 0.15s; }
+    .notif-item:hover { background: rgba(255,255,255,0.06); }
     .notif-item:last-child { border-bottom: none; }
     .notif-item-title { font-size: 13px; color: #e8e6ff; font-weight: 500; }
     .notif-item-meta { font-size: 11px; color: rgba(255,255,255,0.35); margin-top: 3px; }
@@ -789,7 +944,36 @@ export default function App() {
       font-size: 28px; font-weight: 600; color: white;
       margin-bottom: 16px; border: 2px solid rgba(167,139,250,0.3);
     }
-    .pp-name { font-size: 22px; font-weight: 600; color: #f0eeff; margin-bottom: 28px; }
+    .pp-name { font-size: 22px; font-weight: 600; color: #f0eeff; margin-bottom: 16px; }
+    .pp-edit-form { width: 100%; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 18px; margin-bottom: 20px; }
+    body.theme-light .pp-edit-form { background: rgba(0,0,0,0.04); border-color: rgba(0,0,0,0.08); }
+    .pp-info-wrap { position: relative; display: inline-flex; }
+    .pp-info-icon {
+      width: 22px; height: 22px; border-radius: 50%; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      color: rgba(255,255,255,0.3); border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(255,255,255,0.05); transition: all 0.15s;
+    }
+    .pp-info-icon:hover { color: #a78bfa; border-color: rgba(167,139,250,0.4); background: rgba(167,139,250,0.08); }
+    .pp-info-tooltip {
+      display: none; position: absolute; left: 30px; top: 50%; transform: translateY(-50%);
+      width: 260px; background: #1a1535; border: 1px solid rgba(167,139,250,0.25);
+      border-radius: 10px; padding: 12px 14px; z-index: 200;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    }
+    .pp-info-wrap:hover .pp-info-tooltip { display: block; }
+    .pp-info-title { font-size: 12px; font-weight: 600; color: #a78bfa; margin-bottom: 8px; }
+    .pp-info-list { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 5px; }
+    .pp-info-list li { font-size: 12px; color: rgba(255,255,255,0.55); line-height: 1.5; }
+    .pp-info-list strong { color: rgba(255,255,255,0.85); font-weight: 500; }
+    .pp-info-last { margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.08); font-size: 11px; color: rgba(255,255,255,0.3); }
+    body.theme-light .pp-info-icon { color: rgba(0,0,0,0.35); border-color: rgba(0,0,0,0.1); background: rgba(0,0,0,0.04); }
+    body.theme-light .pp-info-icon:hover { color: #7c3aed; border-color: rgba(124,58,237,0.4); background: rgba(124,58,237,0.06); }
+    body.theme-light .pp-info-tooltip { background: #fff; border-color: rgba(124,58,237,0.2); box-shadow: 0 8px 32px rgba(0,0,0,0.12); }
+    body.theme-light .pp-info-title { color: #7c3aed; }
+    body.theme-light .pp-info-list li { color: rgba(0,0,0,0.55); }
+    body.theme-light .pp-info-list strong { color: rgba(0,0,0,0.8); }
+    body.theme-light .pp-info-last { color: rgba(0,0,0,0.35); border-color: rgba(0,0,0,0.08); }
     .pp-fields { width: 100%; display: flex; flex-direction: column; gap: 2px; }
     .pp-row {
       display: flex; align-items: center; justify-content: space-between;
@@ -833,6 +1017,8 @@ export default function App() {
     .task-card { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 12px 14px; cursor: grab; transition: all 0.15s; position: relative; }
     .task-card:hover { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.14); transform: translateY(-1px); }
     .task-card.dragging { opacity: 0.4; cursor: grabbing; }
+    .task-card.task-overdue { background: rgba(239,68,68,0.07); }
+    .task-card.task-overdue:hover { background: rgba(239,68,68,0.12); }
     .task-card-title { font-size: 14px; font-weight: 500; color: #e8e6ff; margin-bottom: 4px; padding-right: 22px; }
     .task-card-desc { font-size: 12px; color: rgba(255,255,255,0.35); line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-bottom: 8px; }
     .task-card-dates { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; color: rgba(255,255,255,0.35); margin-top: 4px; }
@@ -853,7 +1039,13 @@ export default function App() {
     .overlay-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 500; padding: 20px; backdrop-filter: blur(4px); }
     .overlay-inner { background: rgba(11,9,22,0.97); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; padding: 32px; width: 100%; max-width: 440px; }
     .overlay-title { font-family: 'Syne', sans-serif; font-size: 18px; font-weight: 700; color: #f0eeff; margin-bottom: 22px; }
-    .overlay-actions { display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end; }
+    .overlay-actions { display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end; align-items: center; flex-wrap: wrap; }
+    .task-meta-info {
+      flex: 1; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px;
+      padding: 8px 12px; font-size: 11px; color: rgba(255,255,255,0.4);
+      display: flex; flex-direction: column; gap: 2px; line-height: 1.5;
+    }
+    body.theme-light .task-meta-info { border-color: rgba(0,0,0,0.1); color: rgba(0,0,0,0.45); }
 
     .member-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
     .member-chip { padding: 8px 14px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; font-size: 13px; color: rgba(255,255,255,0.6); display: flex; align-items: center; gap: 8px; }
@@ -912,7 +1104,7 @@ export default function App() {
     .note-item-preview { font-size: 12px; color: rgba(255,255,255,0.3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .note-item-date { font-size: 11px; color: rgba(255,255,255,0.22); margin-top: 4px; }
     .note-delete-btn {
-      position: absolute; top: 10px; right: 8px; width: 22px; height: 22px;
+      width: 20px; height: 20px; flex-shrink: 0;
       border: none; background: rgba(248,113,113,0.12); border-radius: 6px; color: #f87171;
       font-size: 13px; cursor: pointer; display: none; align-items: center; justify-content: center;
       transition: all 0.15s;
@@ -939,6 +1131,21 @@ export default function App() {
       flex-shrink: 0;
     }
     .notes-save-indicator { font-size: 12px; color: rgba(255,255,255,0.25); display: flex; align-items: center; gap: 6px; }
+    .notes-editor-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 28px 0; flex-shrink: 0; }
+    .note-share-btn {
+      display: flex; align-items: center; gap: 6px; padding: 5px 12px;
+      background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 8px; color: rgba(255,255,255,0.6); font-size: 12px; cursor: pointer;
+      transition: all 0.15s; white-space: nowrap;
+    }
+    .note-share-btn:hover { background: rgba(255,255,255,0.1); color: #fff; border-color: rgba(255,255,255,0.2); }
+    .note-share-count {
+      background: rgba(167,139,250,0.25); color: #a78bfa; font-size: 10px; font-weight: 700;
+      border-radius: 10px; padding: 1px 6px; min-width: 18px; text-align: center;
+    }
+    body.theme-light .note-share-btn { background: rgba(0,0,0,0.05); border-color: rgba(0,0,0,0.1); color: rgba(0,0,0,0.5); }
+    body.theme-light .note-share-btn:hover { background: rgba(0,0,0,0.09); color: #1a1a2e; }
+    body.theme-light .note-share-count { background: rgba(124,58,237,0.12); color: #7c3aed; }
     .notes-editor-title {
       width: 100%; padding: 20px 28px 10px; background: none; border: none; outline: none;
       font-family: 'Syne', sans-serif; font-size: 28px; font-weight: 700; color: #f0eeff;
@@ -951,6 +1158,64 @@ export default function App() {
       font-family: 'DM Sans', sans-serif; font-size: 15px; color: rgba(255,255,255,0.8);
       line-height: 1.75; resize: none; overflow-y: auto;
     }
+    /* TipTap toolbar */
+    .tiptap-toolbar {
+      display: flex; align-items: center; gap: 2px; flex-wrap: wrap;
+      padding: 6px 28px; border-bottom: 1px solid rgba(255,255,255,0.06); flex-shrink: 0;
+    }
+    .tt-btn {
+      width: 30px; height: 28px; border: none; background: transparent; border-radius: 5px;
+      color: rgba(255,255,255,0.5); font-size: 13px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center; transition: all 0.15s;
+      font-family: inherit;
+    }
+    .tt-btn:hover { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.9); }
+    .tt-btn.active { background: rgba(167,139,250,0.2); color: #a78bfa; }
+    .tt-btn.tt-wide { width: auto; padding: 0 8px; font-size: 12px; }
+    .tt-sep { width: 1px; height: 18px; background: rgba(255,255,255,0.1); margin: 0 4px; }
+    /* TipTap editor content area */
+    .tiptap-editor-wrap { flex: 1; overflow-y: auto; }
+    .tiptap-editor-wrap .ProseMirror {
+      padding: 16px 28px 40px; outline: none; min-height: 100%;
+      font-family: 'DM Sans', sans-serif; font-size: 15px; color: rgba(255,255,255,0.82);
+      line-height: 1.75;
+    }
+    .tiptap-editor-wrap .ProseMirror p.is-editor-empty:first-child::before {
+      content: attr(data-placeholder); color: rgba(255,255,255,0.18); pointer-events: none;
+      height: 0; float: left;
+    }
+    .tiptap-editor-wrap .ProseMirror h1 { font-size: 24px; font-weight: 700; color: #f0eeff; margin: 16px 0 8px; line-height: 1.3; }
+    .tiptap-editor-wrap .ProseMirror h2 { font-size: 19px; font-weight: 600; color: #e8e6ff; margin: 14px 0 6px; }
+    .tiptap-editor-wrap .ProseMirror h3 { font-size: 16px; font-weight: 600; color: #e0deff; margin: 12px 0 4px; }
+    .tiptap-editor-wrap .ProseMirror ul,
+    .tiptap-editor-wrap .ProseMirror ol { padding-left: 22px; margin: 6px 0; }
+    .tiptap-editor-wrap .ProseMirror li { margin: 3px 0; }
+    .tiptap-editor-wrap .ProseMirror code { background: rgba(255,255,255,0.1); border-radius: 4px; padding: 1px 5px; font-size: 13px; font-family: monospace; }
+    .tiptap-editor-wrap .ProseMirror pre { background: rgba(0,0,0,0.35); border-radius: 8px; padding: 12px 16px; margin: 10px 0; overflow-x: auto; }
+    .tiptap-editor-wrap .ProseMirror pre code { background: none; padding: 0; color: #a5f3fc; }
+    .tiptap-editor-wrap .ProseMirror blockquote { border-left: 3px solid rgba(167,139,250,0.6); padding-left: 14px; color: rgba(255,255,255,0.5); margin: 8px 0; }
+    .tiptap-editor-wrap .ProseMirror hr { border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 16px 0; }
+    .tiptap-editor-wrap .ProseMirror ul[data-type="taskList"] { list-style: none; padding-left: 4px; }
+    .tiptap-editor-wrap .ProseMirror ul[data-type="taskList"] li { display: flex; align-items: flex-start; gap: 8px; }
+    .tiptap-editor-wrap .ProseMirror ul[data-type="taskList"] li > label { margin-top: 3px; flex-shrink: 0; }
+    .tiptap-editor-wrap .ProseMirror ul[data-type="taskList"] li > label input[type="checkbox"] { width: 14px; height: 14px; accent-color: #7c3aed; cursor: pointer; }
+    .tiptap-editor-wrap .ProseMirror ul[data-type="taskList"] li[data-checked="true"] > div { opacity: 0.5; text-decoration: line-through; }
+    /* Light mode overrides for TipTap */
+    body.theme-light .tiptap-toolbar { border-color: rgba(0,0,0,0.07); }
+    body.theme-light .tt-btn { color: rgba(0,0,0,0.45); }
+    body.theme-light .tt-btn:hover { background: rgba(0,0,0,0.06); color: #1a1a2e; }
+    body.theme-light .tt-btn.active { background: rgba(124,58,237,0.12); color: #7c3aed; }
+    body.theme-light .tt-sep { background: rgba(0,0,0,0.1); }
+    body.theme-light .tiptap-editor-wrap .ProseMirror { color: rgba(0,0,0,0.8); }
+    body.theme-light .tiptap-editor-wrap .ProseMirror p.is-editor-empty:first-child::before { color: rgba(0,0,0,0.2); }
+    body.theme-light .tiptap-editor-wrap .ProseMirror h1 { color: #1a1a2e; }
+    body.theme-light .tiptap-editor-wrap .ProseMirror h2 { color: #1a1a2e; }
+    body.theme-light .tiptap-editor-wrap .ProseMirror h3 { color: #1a1a2e; }
+    body.theme-light .tiptap-editor-wrap .ProseMirror code { background: rgba(0,0,0,0.07); }
+    body.theme-light .tiptap-editor-wrap .ProseMirror pre { background: rgba(0,0,0,0.06); }
+    body.theme-light .tiptap-editor-wrap .ProseMirror pre code { color: #7c3aed; }
+    body.theme-light .tiptap-editor-wrap .ProseMirror blockquote { border-color: rgba(124,58,237,0.5); color: rgba(0,0,0,0.45); }
+    body.theme-light .tiptap-editor-wrap .ProseMirror hr { border-color: rgba(0,0,0,0.1); }
     .notes-editor-body::placeholder { color: rgba(255,255,255,0.18); }
     .notes-empty-editor {
       flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -1003,7 +1268,7 @@ export default function App() {
         radial-gradient(ellipse at 60% 80%, #e0fff0 0%, transparent 50%), #f0f0f5;
     }
     body.theme-light .dash-header { background: rgba(255,255,255,0.9); border-color: rgba(0,0,0,0.08); }
-    body.theme-light .dash-logo { background: linear-gradient(135deg,#7c3aed,#4f46e5,#059669); -webkit-background-clip: text; background-clip: text; }
+    /* dash-logo is now an image */
     body.theme-light .sidebar { background: rgba(255,255,255,0.7); border-color: rgba(0,0,0,0.08); }
     body.theme-light .sb-icon { color: rgba(0,0,0,0.4); }
     body.theme-light .sb-icon:hover { background: rgba(124,58,237,0.1); color: #7c3aed; }
@@ -1020,6 +1285,7 @@ export default function App() {
     body.theme-light .welcome-text { background: linear-gradient(135deg,#7c3aed,#4f46e5,#059669); -webkit-background-clip: text; background-clip: text; }
     body.theme-light .info-box { background: rgba(0,0,0,0.03); border-color: rgba(0,0,0,0.08); color: rgba(0,0,0,0.5); }
     body.theme-light .info-box code { color: #7c3aed; }
+    body.theme-light .pp-name { color: #1a1a2e; }
     body.theme-light .profile-panel .pp-row { border-color: rgba(0,0,0,0.06); }
     body.theme-light .pp-row:hover { background: rgba(0,0,0,0.02); }
     body.theme-light .pp-label { color: rgba(0,0,0,0.45); }
@@ -1071,6 +1337,10 @@ export default function App() {
     body.theme-light .note-item-preview { color: rgba(0,0,0,0.35); }
     body.theme-light .note-item-date { color: rgba(0,0,0,0.25); }
     body.theme-light .notes-empty { color: rgba(0,0,0,0.25); }
+    .note-meta-row { display: flex; gap: 20px; flex-wrap: wrap; font-size: 11px; color: rgba(255,255,255,0.3); margin-bottom: 6px; padding-left: 2px; }
+    .note-meta-row strong { color: rgba(255,255,255,0.5); font-weight: 500; }
+    body.theme-light .note-meta-row { color: rgba(0,0,0,0.35); }
+    body.theme-light .note-meta-row strong { color: rgba(0,0,0,0.55); }
     body.theme-light .notes-editor-title { color: #1a1a2e; }
     body.theme-light .notes-editor-title::placeholder { color: rgba(0,0,0,0.18); }
     body.theme-light .notes-editor-divider { background: rgba(0,0,0,0.07); }
@@ -1082,6 +1352,28 @@ export default function App() {
     body.theme-light .theme-option-name { color: rgba(0,0,0,0.7); }
     body.theme-light .theme-option:not(.selected) { border-color: rgba(0,0,0,0.1); background: rgba(0,0,0,0.03); }
     body.theme-light .theme-option.selected { background: rgba(124,58,237,0.08); }
+    /* Bell / notifications — light mode */
+    body.theme-light .notif-btn { background: rgba(0,0,0,0.05); border-color: rgba(0,0,0,0.1); color: rgba(0,0,0,0.5); }
+    body.theme-light .notif-btn:hover { background: rgba(0,0,0,0.09); color: #1a1a2e; }
+    body.theme-light .notif-dropdown { background: rgba(255,255,255,0.99); border-color: rgba(0,0,0,0.1); box-shadow: 0 8px 32px rgba(0,0,0,0.15); }
+    body.theme-light .notif-header { color: #1a1a2e; border-color: rgba(0,0,0,0.07); }
+    body.theme-light .notif-item { border-color: rgba(0,0,0,0.05); }
+    body.theme-light .notif-item:hover { background: rgba(0,0,0,0.04); }
+    body.theme-light .notif-item-title { color: #1a1a2e; }
+    body.theme-light .notif-item-meta { color: rgba(0,0,0,0.4); }
+    body.theme-light .notif-empty { color: rgba(0,0,0,0.3); }
+    /* Notes panel — light mode */
+    body.theme-light .notes-panel { background: transparent; }
+    body.theme-light .notes-editor-col { background: transparent; }
+    /* Kanban header — light mode */
+    body.theme-light .kanban-header { color: #1a1a2e; }
+    body.theme-light .kanban-col-title { color: rgba(0,0,0,0.5); }
+    body.theme-light .overlay-inner .label { color: rgba(0,0,0,0.5); }
+    body.theme-light .member-chip-owner { color: rgba(0,0,0,0.4); }
+    body.theme-light .error { background: rgba(239,68,68,0.08); }
+    /* Task overdue light mode */
+    body.theme-light .task-card.task-overdue { background: rgba(239,68,68,0.06); }
+    body.theme-light .task-card.task-overdue:hover { background: rgba(239,68,68,0.1); }
   `;
 
   // ── RENDER ────────────────────────────────────────────────
@@ -1112,16 +1404,16 @@ export default function App() {
     .input:focus { border-color: ${ac.light}80 !important; }
     .big-avatar { background: linear-gradient(135deg, ${ac.c1}, ${ac.c2}) !important; box-shadow: 0 20px 56px ${ac.sh} !important; }
     .profile-btn { background: linear-gradient(135deg, ${ac.c1}, ${ac.c2}) !important; }
-    .pp-avatar { background: linear-gradient(135deg, ${ac.c1}, ${ac.c2}) !important; }
+    /* pp-avatar uses user-chosen color via inline style, no accent override */
     .toggle-opt.active { background: ${ac.c1}40 !important; color: ${ac.light} !important; }
     .note-item.active { background: ${ac.c1}26 !important; border-color: ${ac.c1}59 !important; }
     .theme-option.selected { border-color: ${ac.light} !important; background: ${ac.c1}1f !important; }
     .board-card:hover { background: ${ac.c1}1f !important; border-color: ${ac.c1}66 !important; }
     .bt-option:hover { background: ${ac.c1}1f !important; border-color: ${ac.c1}66 !important; }
     .kanban-col.drag-over { border-color: ${ac.c1}80 !important; background: ${ac.c1}0f !important; }
-    .splash-logo { background: linear-gradient(135deg, ${ac.light}, ${ac.c1}, #34d399) !important; -webkit-background-clip: text !important; background-clip: text !important; }
-    .dash-logo,.logo { background: linear-gradient(135deg, ${ac.light}, ${ac.c1}, #34d399) !important; -webkit-background-clip: text !important; background-clip: text !important; }
+    /* logo is now an image — no text gradient override needed */
     .welcome-text { background: linear-gradient(135deg, ${ac.light}, ${ac.c1}, #34d399) !important; -webkit-background-clip: text !important; background-clip: text !important; }
+    ${theme !== "light" ? `
     .dashboard {
       background:
         radial-gradient(ellipse at 20% 50%, ${ac.bg1} 0%, transparent 55%),
@@ -1135,7 +1427,7 @@ export default function App() {
         radial-gradient(ellipse at 80% 20%, ${ac.bg2} 0%, transparent 50%),
         radial-gradient(ellipse at 60% 80%, ${ac.bg3} 0%, transparent 50%),
         #0a0a0f !important;
-    }
+    }` : ""}
   `;
 
   const displayFirst = userData?.firstName || user?.displayName?.split(" ")[0] || user?.email?.split("@")[0] || "User";
@@ -1145,7 +1437,7 @@ export default function App() {
     return (
       <>
         <style>{styles}</style>
-        <div className="splash"><div className="splash-logo">✦ teja</div></div>
+        <div className="splash"><img src={plioLogo} alt="Plio" className="splash-logo" /></div>
       </>
     );
   }
@@ -1160,7 +1452,7 @@ export default function App() {
 
           {/* ── HEADER ── */}
           <header className="dash-header">
-            <div className="dash-logo">✦ teja</div>
+            <img src={plioLogo} alt="Plio" className="dash-logo" />
 
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               {/* Bell / Notifications */}
@@ -1182,7 +1474,17 @@ export default function App() {
                     {overdueTasks.length === 0
                       ? <div className="notif-empty">No overdue tasks 🎉</div>
                       : overdueTasks.map(t => (
-                        <div key={t.id + t.boardId} className="notif-item">
+                        <div
+                          key={t.id + t.boardId}
+                          className="notif-item"
+                          style={{ cursor: "pointer" }}
+                          onClick={() => {
+                            setNotifOpen(false);
+                            setActivePanel("kanban");
+                            const board = kanbanBoards.find(b => b.id === t.boardId);
+                            if (board) openBoard(board);
+                          }}
+                        >
                           <div className="notif-item-title">{t.title}</div>
                           <div className="notif-item-meta">
                             {t.boardName} · Due {new Date(t.endDate + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
@@ -1315,10 +1617,89 @@ export default function App() {
                     Back
                   </button>
 
-                  <div className="pp-avatar">
+                  <div className="pp-avatar" style={{ background: AVATAR_COLORS[userData?.avatarColor ?? 0] }}>
                     {displayFirst[0]?.toUpperCase() || "U"}
                   </div>
                   <div className="pp-name">{displayFirst} {displayLast}</div>
+
+                  {/* Edit Profile Form */}
+                  {editingProfile ? (
+                    <div className="pp-edit-form">
+                      <div style={{ marginBottom: 14 }}>
+                        <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginBottom: 8 }}>Avatar Color</div>
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                          {AVATAR_COLORS.map((grad, i) => (
+                            <button
+                              key={i}
+                              onClick={() => setEditAvatarColor(i)}
+                              style={{
+                                width: 32, height: 32, borderRadius: "50%", border: editAvatarColor === i ? "2.5px solid #fff" : "2px solid transparent",
+                                background: grad, cursor: "pointer", boxShadow: editAvatarColor === i ? "0 0 0 2px rgba(167,139,250,0.6)" : "none",
+                                outline: "none", transition: "all 0.15s",
+                              }}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
+                        <div>
+                          <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginBottom: 5 }}>First Name <span style={{ color: "#f87171" }}>*</span></div>
+                          <input className="input" value={editFirstName} onChange={e => setEditFirstName(e.target.value)} placeholder="First name" style={{ fontSize: 13 }} />
+                        </div>
+                        <div>
+                          <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginBottom: 5 }}>Last Name</div>
+                          <input className="input" value={editLastName} onChange={e => setEditLastName(e.target.value)} placeholder="Last name" style={{ fontSize: 13 }} />
+                        </div>
+                      </div>
+                      {profileEditError && <div style={{ fontSize: 12, color: "#f87171", marginBottom: 8 }}>{profileEditError}</div>}
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button className="kb-btn kb-btn-secondary" onClick={() => { setEditingProfile(false); setProfileEditError(""); }}>Cancel</button>
+                        <button className="kb-btn kb-btn-primary" onClick={saveProfile} disabled={profileSaving}>
+                          {profileSaving ? <span className="spinner" style={{ width: 13, height: 13 }} /> : "Save"}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ marginBottom: 16 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <button
+                          onClick={openEditProfile}
+                          style={{
+                            fontSize: 12, padding: "6px 14px", borderRadius: 8,
+                            border: "1px solid rgba(167,139,250,0.3)", background: "rgba(167,139,250,0.08)",
+                            color: "#a78bfa", cursor: "pointer", display: "flex", alignItems: "center", gap: 6,
+                          }}
+                        >
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                          </svg>
+                          Edit Profile
+                        </button>
+                        <div className="pp-info-wrap">
+                          <div className="pp-info-icon">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+                            </svg>
+                          </div>
+                          <div className="pp-info-tooltip">
+                            <div className="pp-info-title">Edit Profile — Terms</div>
+                            <ul className="pp-info-list">
+                              <li>You can update your <strong>avatar color</strong>, <strong>first name</strong> and <strong>last name</strong></li>
+                              <li>Changes are allowed <strong>once per day</strong></li>
+                              <li>Email and User ID cannot be changed</li>
+                            </ul>
+                            {userData?.lastProfileEdit && (
+                              <div className="pp-info-last">
+                                Last edited: {userData.lastProfileEdit === new Date().toISOString().split("T")[0] ? "Today" : userData.lastProfileEdit}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      {profileEditError && <div style={{ fontSize: 12, color: "#f87171", marginTop: 6 }}>{profileEditError}</div>}
+                    </div>
+                  )}
 
                   <div className="pp-fields">
                     <div className="pp-row">
@@ -1337,11 +1718,51 @@ export default function App() {
                       <span className="pp-label">Sign-in Provider</span>
                       <span className="pp-value pp-badge">{userData?.provider || user?.providerData?.[0]?.providerId || "—"}</span>
                     </div>
-                    <div className="pp-row">
+                    <div className="pp-row" style={{ alignItems: "flex-start", paddingTop: 14, paddingBottom: 14 }}>
                       <span className="pp-label">Email Verified</span>
-                      <span className={`pp-value pp-badge ${user?.emailVerified ? "pp-green" : "pp-yellow"}`}>
-                        {user?.emailVerified ? "Verified" : "Not verified"}
-                      </span>
+                      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
+                        <span className={`pp-value pp-badge ${user?.emailVerified ? "pp-green" : "pp-yellow"}`}>
+                          {user?.emailVerified ? "Verified" : "Not verified"}
+                        </span>
+                        {!user?.emailVerified && (
+                          <>
+                            <button
+                              style={{
+                                fontSize: 11, padding: "5px 12px", borderRadius: 8, border: "1px solid rgba(167,139,250,0.3)",
+                                background: verifSent ? "rgba(52,211,153,0.1)" : "rgba(167,139,250,0.08)",
+                                color: verifSent ? "#34d399" : "#a78bfa", cursor: verifSent ? "default" : "pointer",
+                              }}
+                              disabled={verifSent}
+                              onClick={async () => {
+                                setVerifError("");
+                                try {
+                                  await sendEmailVerification(user);
+                                  setVerifSent(true);
+                                } catch (e) {
+                                  if (e.code === "auth/too-many-requests") setVerifError("Too many attempts. Wait a few minutes and try again.");
+                                  else setVerifError(e.message || "Failed to send. Try again.");
+                                }
+                              }}
+                            >
+                              {verifSent ? "✓ Email sent — check your inbox (& spam)" : "Send verification email"}
+                            </button>
+                            {verifSent && (
+                              <button
+                                style={{
+                                  fontSize: 11, padding: "5px 12px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)",
+                                  background: "rgba(255,255,255,0.05)", color: "rgba(255,255,255,0.5)", cursor: "pointer",
+                                }}
+                                onClick={async () => {
+                                  try { await user.reload(); setUser(auth.currentUser); } catch {}
+                                }}
+                              >
+                                I've verified — refresh status
+                              </button>
+                            )}
+                            {verifError && <span style={{ fontSize: 11, color: "#f87171", textAlign: "right" }}>{verifError}</span>}
+                          </>
+                        )}
+                      </div>
                     </div>
                     <div className="pp-row" style={{ alignItems: "flex-start", paddingTop: 16, paddingBottom: 16 }}>
                       <span className="pp-label">
@@ -1455,7 +1876,7 @@ export default function App() {
                   <div className="settings-section">
                     <div className="settings-section-label">About</div>
                     <div className="info-box" style={{ fontSize: 13 }}>
-                      <div style={{ marginBottom: 4 }}><code>✦ teja dashboard</code></div>
+                      <div style={{ marginBottom: 4 }}><code>plio dashboard</code></div>
                       <div style={{ color: "rgba(255,255,255,0.35)" }}>Logged in as <strong style={{ color: "rgba(255,255,255,0.6)" }}>{user?.email}</strong></div>
                     </div>
                   </div>
@@ -1528,14 +1949,29 @@ export default function App() {
                           className={`note-item ${activeNote?.id === note.id ? "active" : ""}`}
                           onClick={() => openNote(note)}
                         >
-                          <div className="note-item-title">{note.title || "Untitled"}</div>
-                          <div className="note-item-preview">{note.content?.replace(/\n/g, " ") || "No content yet"}</div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <div className="note-item-title" style={{ flex: 1 }}>{note.title || "Untitled"}</div>
+                            {note.sharedWith?.length > 0 && (
+                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: "rgba(167,139,250,0.7)", flexShrink: 0 }} title="Shared">
+                                <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+                                <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/>
+                                <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+                              </svg>
+                            )}
+                            {note.uid !== user?.uid && (
+                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: "rgba(96,165,250,0.7)", flexShrink: 0 }} title="Shared with you">
+                                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
+                                <path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                              </svg>
+                            )}
+                            <button
+                              className="note-delete-btn"
+                              onClick={e => { e.stopPropagation(); deleteNote(note.id); }}
+                              title="Delete"
+                            >×</button>
+                          </div>
+                          <div className="note-item-preview">{note.content?.replace(/<[^>]*>/g, "").replace(/\n/g, " ") || "No content yet"}</div>
                           <div className="note-item-date">{relDate(note.updatedAt)}</div>
-                          <button
-                            className="note-delete-btn"
-                            onClick={e => { e.stopPropagation(); deleteNote(note.id); }}
-                            title="Delete"
-                          >×</button>
                         </div>
                       ));
                     })()}
@@ -1561,6 +1997,44 @@ export default function App() {
                     </div>
                   ) : (
                     <>
+                      {/* Note Share Modal */}
+                      {showNoteShare && activeNote?.id && (
+                        <div className="overlay-modal" onClick={e => e.target === e.currentTarget && (setShowNoteShare(false), setNoteShareError(""))}>
+                          <div className="overlay-inner" style={{ maxWidth: 420 }}>
+                            <div className="overlay-title">Share Note</div>
+                            {(activeNote.sharedEmails?.length > 0) && (
+                              <div className="member-list" style={{ marginBottom: 16 }}>
+                                {activeNote.sharedEmails.map(e => (
+                                  <div key={e} className="member-chip">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
+                                    {e}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            <div className="input-group">
+                              <label className="label">Add by Email or User ID</label>
+                              <input
+                                className="input"
+                                type="text"
+                                placeholder="email@example.com  or  User ID"
+                                value={noteShareInput}
+                                onChange={e => { setNoteShareInput(e.target.value); setNoteShareError(""); }}
+                                onKeyDown={e => e.key === "Enter" && shareNote(noteShareInput)}
+                                autoFocus
+                              />
+                            </div>
+                            <div className="overlay-actions">
+                              {noteShareError && <div className="error" style={{ fontSize: 12, marginBottom: 0 }}>{noteShareError}</div>}
+                              <button className="kb-btn kb-btn-secondary" onClick={() => { setShowNoteShare(false); setNoteShareError(""); setNoteShareInput(""); }}>Close</button>
+                              <button className="kb-btn kb-btn-primary" onClick={() => shareNote(noteShareInput)} disabled={noteShareSaving || !noteShareInput.trim()}>
+                                {noteShareSaving ? <span className="spinner" style={{ width: 14, height: 14 }} /> : "Share"}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
                       <div className="notes-editor-header">
                         <div className="notes-save-indicator">
                           {noteSaving && (
@@ -1581,7 +2055,30 @@ export default function App() {
                             <span style={{ color: "rgba(255,255,255,0.2)" }}>Auto-saving in a moment…</span>
                           )}
                         </div>
+                        {activeNote?.id && activeNote?.uid === user?.uid && (
+                          <button
+                            className="note-share-btn"
+                            onClick={() => { setShowNoteShare(true); setNoteShareError(""); setNoteShareInput(""); }}
+                            title="Share note"
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+                              <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/>
+                              <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+                            </svg>
+                            Share
+                            {(activeNote.sharedWith?.length > 0) && (
+                              <span className="note-share-count">{activeNote.sharedWith.length}</span>
+                            )}
+                          </button>
+                        )}
                       </div>
+                      {activeNote?.lastModifiedBy && (
+                        <div className="note-meta-row">
+                          <span>last modified by : <strong>{activeNote.lastModifiedBy}</strong></span>
+                          <span>last changed date : <strong>{activeNote.lastModifiedAt}</strong></span>
+                        </div>
+                      )}
                       <input
                         className="notes-editor-title"
                         placeholder="Note title…"
@@ -1589,12 +2086,52 @@ export default function App() {
                         onChange={e => { setNoteError(""); setNoteTitle(e.target.value); }}
                       />
                       <div className="notes-editor-divider" />
-                      <textarea
-                        className="notes-editor-body"
-                        placeholder="Start writing…"
-                        value={noteContent}
-                        onChange={e => { setNoteError(""); setNoteContent(e.target.value); }}
-                      />
+                      {/* TipTap Toolbar */}
+                      {editor && (
+                        <div className="tiptap-toolbar">
+                          <button className={`tt-btn${editor.isActive("bold") ? " active" : ""}`} onMouseDown={e => { e.preventDefault(); editor.chain().focus().toggleBold().run(); }} title="Bold (Ctrl+B)"><strong>B</strong></button>
+                          <button className={`tt-btn${editor.isActive("italic") ? " active" : ""}`} onMouseDown={e => { e.preventDefault(); editor.chain().focus().toggleItalic().run(); }} title="Italic (Ctrl+I)"><em>I</em></button>
+                          <button className={`tt-btn${editor.isActive("underline") ? " active" : ""}`} onMouseDown={e => { e.preventDefault(); editor.chain().focus().toggleUnderline().run(); }} title="Underline (Ctrl+U)"><span style={{ textDecoration: "underline" }}>U</span></button>
+                          <button className={`tt-btn${editor.isActive("strike") ? " active" : ""}`} onMouseDown={e => { e.preventDefault(); editor.chain().focus().toggleStrike().run(); }} title="Strikethrough"><s>S</s></button>
+                          <div className="tt-sep" />
+                          <button className={`tt-btn tt-wide${editor.isActive("heading", { level: 1 }) ? " active" : ""}`} onMouseDown={e => { e.preventDefault(); editor.chain().focus().toggleHeading({ level: 1 }).run(); }} title="Heading 1">H1</button>
+                          <button className={`tt-btn tt-wide${editor.isActive("heading", { level: 2 }) ? " active" : ""}`} onMouseDown={e => { e.preventDefault(); editor.chain().focus().toggleHeading({ level: 2 }).run(); }} title="Heading 2">H2</button>
+                          <button className={`tt-btn tt-wide${editor.isActive("heading", { level: 3 }) ? " active" : ""}`} onMouseDown={e => { e.preventDefault(); editor.chain().focus().toggleHeading({ level: 3 }).run(); }} title="Heading 3">H3</button>
+                          <div className="tt-sep" />
+                          <button className={`tt-btn${editor.isActive("bulletList") ? " active" : ""}`} onMouseDown={e => { e.preventDefault(); editor.chain().focus().toggleBulletList().run(); }} title="Bullet List">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="9" y1="6" x2="20" y2="6"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="18" x2="20" y2="18"/><circle cx="4" cy="6" r="1.5" fill="currentColor"/><circle cx="4" cy="12" r="1.5" fill="currentColor"/><circle cx="4" cy="18" r="1.5" fill="currentColor"/></svg>
+                          </button>
+                          <button className={`tt-btn${editor.isActive("orderedList") ? " active" : ""}`} onMouseDown={e => { e.preventDefault(); editor.chain().focus().toggleOrderedList().run(); }} title="Ordered List">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="10" y1="6" x2="21" y2="6"/><line x1="10" y1="12" x2="21" y2="12"/><line x1="10" y1="18" x2="21" y2="18"/><path d="M4 6h1v4"/><path d="M4 10h2"/><path d="M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"/></svg>
+                          </button>
+                          <button className={`tt-btn${editor.isActive("taskList") ? " active" : ""}`} onMouseDown={e => { e.preventDefault(); editor.chain().focus().toggleTaskList().run(); }} title="Task List / Checklist">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+                          </button>
+                          <div className="tt-sep" />
+                          <button className={`tt-btn${editor.isActive("blockquote") ? " active" : ""}`} onMouseDown={e => { e.preventDefault(); editor.chain().focus().toggleBlockquote().run(); }} title="Blockquote">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 21c3 0 7-1 7-8V5c0-1.25-.756-2.017-2-2H4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2 1 0 1 0 1 1v1c0 1-1 2-2 2s-1 .008-1 1.031V20c0 1 0 1 1 1z"/><path d="M15 21c3 0 7-1 7-8V5c0-1.25-.757-2.017-2-2h-4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2h.75c0 2.25.25 4-2.75 4v3c0 1 0 1 1 1z"/></svg>
+                          </button>
+                          <button className={`tt-btn${editor.isActive("code") ? " active" : ""}`} onMouseDown={e => { e.preventDefault(); editor.chain().focus().toggleCode().run(); }} title="Inline Code">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                          </button>
+                          <button className={`tt-btn${editor.isActive("codeBlock") ? " active" : ""}`} onMouseDown={e => { e.preventDefault(); editor.chain().focus().toggleCodeBlock().run(); }} title="Code Block">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                          </button>
+                          <div className="tt-sep" />
+                          <button className="tt-btn" onMouseDown={e => { e.preventDefault(); editor.chain().focus().setHorizontalRule().run(); }} title="Divider">—</button>
+                          <div className="tt-sep" />
+                          <button className="tt-btn" onMouseDown={e => { e.preventDefault(); editor.chain().focus().undo().run(); }} title="Undo (Ctrl+Z)" disabled={!editor.can().undo()}>
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>
+                          </button>
+                          <button className="tt-btn" onMouseDown={e => { e.preventDefault(); editor.chain().focus().redo().run(); }} title="Redo (Ctrl+Y)" disabled={!editor.can().redo()}>
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13"/></svg>
+                          </button>
+                        </div>
+                      )}
+                      {/* TipTap editor */}
+                      <div className="tiptap-editor-wrap">
+                        <EditorContent editor={editor} />
+                      </div>
                     </>
                   )}
                 </div>
@@ -1780,11 +2317,17 @@ export default function App() {
                         </div>
                       </div>
                       {editTaskError && <div className="error" style={{ fontSize: 12, marginTop: 4 }}>{editTaskError}</div>}
-                      <div className="overlay-actions">
-                        <button className="kb-btn kb-btn-secondary" onClick={() => { setSelectedTask(null); setEditTaskError(""); }}>Cancel</button>
-                        <button className="kb-btn kb-btn-primary" onClick={handleUpdateTask} disabled={kanbanLoading || !editTaskTitle.trim()}>
-                          {kanbanLoading ? <span className="spinner" style={{ width: 14, height: 14 }} /> : "Save"}
-                        </button>
+                      <div className="overlay-actions" style={{ alignItems: "center" }}>
+                        <div className="task-meta-info">
+                          <span>last modified by : {selectedTask?.lastModifiedBy || selectedTask?.createdBy || "—"}</span>
+                          <span>last changed date : {selectedTask?.lastModifiedAt || new Date().toISOString().split("T")[0]}</span>
+                        </div>
+                        <div style={{ display: "flex", gap: 10, marginLeft: "auto" }}>
+                          <button className="kb-btn kb-btn-secondary" onClick={() => { setSelectedTask(null); setEditTaskError(""); }}>Cancel</button>
+                          <button className="kb-btn kb-btn-primary" onClick={handleUpdateTask} disabled={kanbanLoading || !editTaskTitle.trim()}>
+                            {kanbanLoading ? <span className="spinner" style={{ width: 14, height: 14 }} /> : "Save"}
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -1870,11 +2413,14 @@ export default function App() {
                               <span className="col-badge" style={{ background: col.color + "22", color: col.color }}>{colTasks.length}</span>
                             </div>
                             <div className="col-cards">
-                              {colTasks.map(task => (
-                                <div
+                              {colTasks.map(task => {
+                                const today = new Date().toISOString().split("T")[0];
+                                const isOverdue = task.endDate && task.endDate < today && task.status !== "done";
+                                return (
+                                  <div
                                   key={task.id}
-                                  className={`task-card ${dragTaskId === task.id ? "dragging" : ""}`}
-                                  style={{ borderColor: col.color + "66" }}
+                                  className={`task-card ${dragTaskId === task.id ? "dragging" : ""} ${isOverdue ? "task-overdue" : ""}`}
+                                  style={{ borderColor: isOverdue ? "#ef444488" : col.color + "66" }}
                                   draggable
                                   onDragStart={() => setDragTaskId(task.id)}
                                   onDragEnd={() => { setDragTaskId(null); setDragOverCol(null); }}
@@ -1889,8 +2435,9 @@ export default function App() {
                                     </div>
                                   )}
                                   <button className="task-delete" onClick={e => { e.stopPropagation(); handleDeleteTask(task); }} title="Delete">×</button>
-                                </div>
-                              ))}
+                                  </div>
+                                );
+                              })}
                             </div>
                           </div>
                         );
@@ -1916,7 +2463,7 @@ export default function App() {
         {/* LANDING */}
         {screen === "landing" && (
           <div className="card">
-            <div className="logo">✦ teja</div>
+            <img src={plioLogo} alt="Plio" className="logo" />
             <h2>Welcome</h2>
             <p className="desc">Sign in or create a new account to continue.</p>
             <button className="btn-primary btn-login" onClick={() => { setScreen("login"); clearError(); }}>Log In</button>

@@ -26,9 +26,13 @@ service cloud.firestore {
       }
     }
 
-    // Notes — only the note owner can read/write
+    // Notes — owner can read/write/delete; shared users can read only
     match /notes/{noteId} {
-      allow read, update, delete: if request.auth != null
+      allow read: if request.auth != null && (
+        resource.data.uid == request.auth.uid ||
+        request.auth.uid in resource.data.sharedWith
+      );
+      allow update, delete: if request.auth != null
         && resource.data.uid == request.auth.uid;
       allow create: if request.auth != null
         && request.resource.data.uid == request.auth.uid;

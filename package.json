@@ -11,6 +11,13 @@
     "deploy": "gh-pages -d dist --dotfiles"
   },
   "dependencies": {
+    "@tiptap/extension-placeholder": "^3.20.1",
+    "@tiptap/extension-task-item": "^3.20.1",
+    "@tiptap/extension-task-list": "^3.20.1",
+    "@tiptap/extension-underline": "^3.20.1",
+    "@tiptap/pm": "^3.20.1",
+    "@tiptap/react": "^3.20.1",
+    "@tiptap/starter-kit": "^3.20.1",
     "firebase": "^10.14.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"

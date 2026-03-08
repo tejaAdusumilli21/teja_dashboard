@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://tejaadusumilli-pixel.github.io/Plio/sitemap.xml
